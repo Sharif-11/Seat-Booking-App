@@ -1,12 +1,14 @@
 from fastapi import FastAPI
 from app.bootstrap import lifespan
+from fastapi.exceptions import RequestValidationError
+from app.core.exceptions import validation_exception_handler
 
 app = FastAPI(
     title="Seat Booking API",
     version="1.0.0",
     lifespan=lifespan
 )
-
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
 # routers
 from app.modules.auth.routes import router as auth_router
 # from app.modules.booking.routes import router as booking_router
