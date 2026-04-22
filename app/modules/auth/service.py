@@ -70,6 +70,20 @@ class AuthService:
     def verify_otp(self, phone: str, otp: str):
 
         user = self.repo.get_user_by_phone(phone)
+        # check if user exists and already verified
+        if user and user[2] is True:
+            token = self._generate_token(user[0], phone)
+
+            return {
+                "status": "success",
+                "status_code": 200,
+                "message": "User already verified",
+                "data": {
+                    "user_id": user[0],
+                    "phone": phone,
+                    "token": token
+                }
+            }
         otp_data = self.repo.get_otp(phone)
 
         if not otp_data:
