@@ -55,7 +55,8 @@ class PaymentService:
             "SUCCESS"
         )
 
-        self.booking_repo.update_status(booking_id, "CONFIRMED")
+        await self.booking_repo.update_status(booking_id, "CONFIRMED")
+
         # invalidate redis cached booked for a show id 
         show_id = booking[2]  # show_id
         booked_key = f"seat_booked:{show_id}"
