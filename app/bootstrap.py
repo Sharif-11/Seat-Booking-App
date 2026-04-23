@@ -8,7 +8,7 @@ async def lifespan(app):
     print("Starting system...")
 
     await init_db()
-    # await init_redis()
+    await init_redis()
 
     # ws_manager.init()
 
