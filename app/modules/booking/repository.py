@@ -98,6 +98,43 @@ class BookingRepository:
         except Exception:
             conn.rollback()
             return []
+    
+
+    # we need a method to delete all expiredbooking for a show id
+    def delete_expired_bookings_for_show(self, show_id):
+        conn = get_connection()
+        cur = conn.cursor()
+
+        try:
+            cur.execute("""
+                DELETE FROM bookings
+                WHERE status = 'EXPIRED'
+                  AND show_id = %s
+            """, (show_id,))
+            
+            deleted_count = cur.rowcount
+            conn.commit()
+            
+            return {
+                "status": "success",
+                "status_code": 200,
+                "message": f"Deleted {deleted_count} expired bookings for show {show_id}",
+                "data": {"deleted_count": deleted_count}
+            }
+            
+        except Exception as e:
+            conn.rollback()
+            return {
+                "status": "error",
+                "status_code": 500,
+                "message": "Failed to delete expired bookings",
+                "error": str(e),
+                "data": None
+            }
+
+        finally:
+            cur.close()
+            conn.close()
 
     # -------------------------
     # 🚀 Create booking (PENDING)
@@ -425,6 +462,40 @@ class BookingRepository:
                 "data": None
             }
 
+        finally:
+            cur.close()
+            conn.close()
+
+    async def get_by_id(self, booking_id: int):
+        conn = get_connection()
+        cur = conn.cursor()
+
+        try:
+            query = "SELECT * FROM bookings WHERE id = %s"
+            cur.execute(query, (booking_id,))
+            return cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+  
+    async def update_status(self, booking_id: int, status: str):
+        conn = get_connection()
+        cur = conn.cursor()
+
+        try:
+            query = """
+                UPDATE bookings
+                SET status = %s
+                WHERE id = %s
+                RETURNING *
+            """
+            cur.execute(query, (status, booking_id))
+            row = cur.fetchone()
+            conn.commit()
+            return row
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             cur.close()
             conn.close()

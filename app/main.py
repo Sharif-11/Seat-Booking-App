@@ -13,12 +13,12 @@ app.add_exception_handler(RequestValidationError, validation_exception_handler)
 from app.modules.auth.routes import router as auth_router
 from app.modules.booking.routes import router as booking_router
 from app.modules.shows.routes import router as shows_router
-# from app.modules.payment.routes import router as payment_router
+from app.modules.payment.routes import router as payment_router
 
 app.include_router(auth_router, prefix="/auth", tags=["Auth"])
 app.include_router(shows_router, prefix="/shows", tags=["Shows"])
 app.include_router(booking_router, prefix="/booking", tags=["Booking"])
-# app.include_router(payment_router, prefix="/payment", tags=["Payment"])
+app.include_router(payment_router, prefix="/payment", tags=["Payment"])
 
 
 @app.get("/")

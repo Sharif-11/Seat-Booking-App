@@ -26,6 +26,8 @@ class BookingService:
     # 🚀 CREATE BOOKING
     # -------------------------
     async def create_booking(self, payload, user):
+        
+        self.repo.delete_expired_bookings_for_show(payload.show_id)
 
         redis = get_redis()
 
@@ -115,6 +117,9 @@ class BookingService:
                     for seat_id in locked_seats:
                         await redis.delete(self._seat_lock_key(show_id, seat_id))
                     raise e
+
+           
+
 
             # 6️⃣ Create booking in database (PENDING state)
             booking = self.repo.create_booking(
