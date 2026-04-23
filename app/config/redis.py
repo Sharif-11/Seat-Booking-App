@@ -15,7 +15,8 @@ async def init_redis():
        password=settings.REDIS_PASSWORD,
 
     )
-
+    check = await redis_client.ping()
+    print(f"Redis ping result: {check}")
     await redis_client.ping()
     print("Redis connected")
 

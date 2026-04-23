@@ -61,7 +61,7 @@ class ShowRepository:
         }
 
     # ---------------- CREATE SHOW ----------------
-    def create_show(self, data):
+    async def create_show(self, data):
         conn = get_connection()
         cur = conn.cursor()
 
@@ -107,7 +107,7 @@ class ShowRepository:
         }
 
     # ---------------- UPDATE SHOW ----------------
-    def update_show(self, show_id, data):
+    async def update_show(self, show_id, data):
         conn = get_connection()
         cur = conn.cursor()
 
@@ -149,7 +149,7 @@ class ShowRepository:
         }
 
     # ---------------- LIST SHOWS ----------------
-    def list_shows(self, from_location, to_location):
+    async def list_shows(self, from_location, to_location):
         conn = get_connection()
         cur = conn.cursor()
 
@@ -184,7 +184,7 @@ class ShowRepository:
         }
 
     # ---------------- GET SINGLE SHOW ----------------
-    def get_show(self, show_id):
+    async def get_show(self, show_id):
         conn = get_connection()
         cur = conn.cursor()
 
@@ -215,7 +215,7 @@ class ShowRepository:
         }
 
     # ---------------- GET SEATS ----------------
-    def get_seats_by_show(self, show_id):
+    async def get_seats_by_show(self, show_id):
         conn = get_connection()
         cur = conn.cursor()
 
