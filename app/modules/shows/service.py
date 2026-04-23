@@ -10,46 +10,31 @@ LOCK_TTL = 5     # seconds
 
 
 class ShowService:
+
     def __init__(self):
         self.repo = ShowRepository()
 
     # -------------------------
-    # 🔑 Cache Key Builder
+    # 🔑 Cache Keys
     # -------------------------
-    def _cache_key(self, from_location: str, to_location: str) -> str:
+    def _cache_key(self, from_location: str, to_location: str):
         return f"shows:{from_location.strip().lower()}:{to_location.strip().lower()}"
 
-    def _seat_cache_key(self, show_id: int) -> str:
+    def _seat_cache_key(self, show_id: int):
         return f"seats:{show_id}"
 
-    # -------------------------
-    # 🧹 Cache Invalidation
-    # -------------------------
-    async def _invalidate_search_cache(self, from_location: str, to_location: str):
-        redis = get_redis()
-        if not redis:
-            return
+    def _booked_cache_key(self, show_id: int):
+        return f"seat_booked:{show_id}"
 
-        try:
-            await redis.delete(self._cache_key(from_location, to_location))
-        except Exception:
-            pass
-
-    async def _invalidate_seat_cache(self, show_id: int):
-        redis = get_redis()
-        if not redis:
-            return
-
-        try:
-            await redis.delete(self._seat_cache_key(show_id))
-        except Exception:
-            pass
+    def _seat_lock_key(self, show_id: int, seat_id: int):
+        return f"seat_lock:{show_id}:{seat_id}"
 
     # -------------------------
     # 🎬 Create Show
     # -------------------------
     async def create_show(self, data):
-        result = await self.repo.create_show({
+
+        result = self.repo.create_show({
             "from_location": data.from_location.strip(),
             "to_location": data.to_location.strip(),
             "departure_time": data.departure_time,
@@ -57,10 +42,12 @@ class ShowService:
             "seat_count": data.seat_count
         })
 
-        await self._invalidate_search_cache(
-            data.from_location,
-            data.to_location
-        )
+        redis = get_redis()
+        if redis:
+            try:
+                await redis.delete(self._cache_key(data.from_location, data.to_location))
+            except Exception:
+                pass
 
         return result
 
@@ -68,111 +55,141 @@ class ShowService:
     # ✏️ Update Show
     # -------------------------
     async def update_show(self, show_id, data):
-        old_show_res = await self.repo.get_show(show_id)
-        old_show = old_show_res.get("data") if old_show_res else None
 
-        result = await self.repo.update_show(show_id, data)
+        old = self.repo.get_show(show_id)
+        old_data = old.get("data") if old else None
 
-        # invalidate old cache
-        if old_show:
-            await self._invalidate_search_cache(
-                old_show["from_location"],
-                old_show["to_location"]
-            )
+        result = self.repo.update_show(show_id, data)
 
-        # invalidate new cache
-        await self._invalidate_search_cache(
-            getattr(data, "from_location", old_show["from_location"]),
-            getattr(data, "to_location", old_show["to_location"])
-        )
-
-        return result
-
-    # -------------------------
-    # 🔍 List Shows (Cache Aside + Lock)
-    # -------------------------
-    async def list_shows(self, from_location: str, to_location: str):
-        key = self._cache_key(from_location, to_location)
-        redis = get_redis()
-
-        # fallback if redis not available
-        if not redis:
-            return await self.repo.list_shows(from_location, to_location)
-
-        # 1️⃣ cache lookup
-        try:
-            cached = await redis.get(key)
-            if cached:
-                return json.loads(cached)
-        except Exception:
-            return await self.repo.list_shows(from_location, to_location)
-
-        lock_key = f"lock:{key}"
-
-        # 2️⃣ lock
-        try:
-            lock_acquired = await redis.set(lock_key, "1", nx=True, ex=LOCK_TTL)
-        except Exception:
-            lock_acquired = False
-
-        if lock_acquired:
-            try:
-                result = await self.repo.list_shows(from_location, to_location)
-
-                await redis.set(
-                    key,
-                    json.dumps(result),
-                    ex=CACHE_TTL
-                )
-
-                return result
-
-            finally:
+        if old_data:
+            redis = get_redis()
+            if redis:
                 try:
-                    await redis.delete(lock_key)
+                    await redis.delete(
+                        self._cache_key(
+                            old_data["from_location"],
+                            old_data["to_location"]
+                        )
+                    )
                 except Exception:
                     pass
 
-        # 3️⃣ wait retry
-        await asyncio.sleep(0.05)
-
-        try:
-            cached = await redis.get(key)
-            if cached:
-                return json.loads(cached)
-        except Exception:
-            pass
-
-        return await self.repo.list_shows(from_location, to_location)
+        return result
 
     # -------------------------
-    # 🎫 Get Single Show (cached optional later)
+    # 🔍 List Shows
     # -------------------------
-    async def get_show(self, show_id):
-        return await self.repo.get_show(show_id)
+    async def list_shows(self, from_location, to_location):
 
-    # -------------------------
-    # 💺 Seat Map (WITH CACHE FIX)
-    # -------------------------
-    async def get_seat_map(self, show_id):
-        key = self._seat_cache_key(show_id)
+        key = self._cache_key(from_location, to_location)
         redis = get_redis()
 
-        if not redis:
-            return await self.repo.get_seats_by_show(show_id)
+        if redis:
+            try:
+                cached = await redis.get(key)
+                if cached:
+                    return json.loads(cached)
+            except Exception:
+                pass
+
+        result = self.repo.list_shows(from_location, to_location)
+
+        if redis:
+            try:
+                await redis.set(key, json.dumps(result), ex=CACHE_TTL)
+            except Exception:
+                pass
+
+        return result
+
+    # -------------------------
+    # 🎫 Get Show
+    # -------------------------
+    async def get_show(self, show_id):
+        return self.repo.get_show(show_id)
+
+    # -------------------------
+    # 💺 SEAT MAP (FULL STATUS SYSTEM)
+    # -------------------------
+    async def get_seat_map(self, show_id):
+
+        redis = get_redis()
+
+        base_key = self._seat_cache_key(show_id)
+        booked_key = self._booked_cache_key(show_id)
+
+        # -------------------------
+        # 1️⃣ Load seats
+        # -------------------------
+        if redis:
+            try:
+                cached = await redis.get(base_key)
+
+                if cached:
+                    seat_map = json.loads(cached)
+                else:
+                    seat_map = self.repo.get_seats_by_show(show_id)
+                    await redis.set(base_key, json.dumps(seat_map), ex=CACHE_TTL)
+
+            except Exception:
+                seat_map = self.repo.get_seats_by_show(show_id)
+        else:
+            seat_map = self.repo.get_seats_by_show(show_id)
+
+        seats = seat_map.get("data", [])
+
+        # -------------------------
+        # 2️⃣ BOOKED (Redis - CONFIRMED bookings only)
+        # -------------------------
+        booked = set()
+
+        if redis:
+            try:
+                raw = await redis.get(booked_key)
+                if raw:
+                    booked = set(map(str, json.loads(raw)))
+            except Exception:
+                pass
+
+        # -------------------------
+        # 3️⃣ RESERVED (seat locks - temporary holds)
+        # -------------------------
+        reserved = set()
+
+        if redis:
+            try:
+                for seat in seats:
+                    seat_id = seat["id"]
+                    key = self._seat_lock_key(show_id, seat_id)
+
+                    if await redis.get(key):
+                        reserved.add(str(seat_id))
+            except Exception:
+                pass
+
+        # -------------------------
+        # 4️⃣ PENDING (DB - should be treated as RESERVED)
+        # -------------------------
+        pending_seats = set()
 
         try:
-            cached = await redis.get(key)
-            if cached:
-                return json.loads(cached)
-        except Exception:
-            return await self.repo.get_seats_by_show(show_id)
-
-        result = await self.repo.get_seats_by_show(show_id)
-
-        try:
-            await redis.set(key, json.dumps(result), ex=CACHE_TTL)
+            db_pending = self.repo.get_pending_seats(show_id)
+            if db_pending and db_pending.get("data"):
+                pending_seats = set(map(str, db_pending["data"]))
         except Exception:
             pass
 
-        return result
+        # -------------------------
+        # 5️⃣ Merge status (PENDING → RESERVED)
+        # -------------------------
+        for seat in seats:
+            sid = str(seat["id"])
+
+            if sid in booked:
+                seat["status"] = "BOOKED"
+            elif sid in reserved or sid in pending_seats:
+                seat["status"] = "RESERVED"
+            else:
+                seat["status"] = "AVAILABLE"
+
+        return seat_map
