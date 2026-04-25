@@ -3,6 +3,7 @@ from fastapi import HTTPException
 from app.modules.payment.repository import PaymentRepository
 from app.modules.booking.repository import BookingRepository
 from app.config.redis import get_redis
+from app.config.Cache_key import CacheKey
 
 
 class PaymentService:
@@ -59,8 +60,13 @@ class PaymentService:
 
         # invalidate redis cached booked for a show id 
         show_id = booking[2]  # show_id
-        booked_key = f"seat_booked:{show_id}"
-        get_redis().delete(booked_key)
+        redis = get_redis()
+        if redis:
+            booked_key = CacheKey.booked_seats(show_id)
+            await redis.delete(booked_key)
+
+
+       
 
         return {
             "status": "success",

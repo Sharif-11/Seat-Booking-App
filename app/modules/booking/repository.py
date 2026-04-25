@@ -1,21 +1,116 @@
-from datetime import datetime, timedelta
+import uuid
+from datetime import datetime, timedelta, timezone
 from app.db.connection import get_connection
+from app.config.settings import settings
+from app.config.Cache_key import CacheKey
+from app.config.redis import get_redis
 
 
 class BookingRepository:
 
     # -------------------------
-    # 🔍 Check already CONFIRMED seats (not PENDING)
+    # Helper to get current UTC time from database
+    # -------------------------
+    def _get_current_utc(self, cur=None):
+        """Get current UTC time from database to ensure consistency"""
+        if cur:
+            # Use existing cursor
+            cur.execute("SELECT NOW() AT TIME ZONE 'UTC'")
+            return cur.fetchone()[0]
+        else:
+            # Create new connection if no cursor provided
+            conn = get_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT NOW() AT TIME ZONE 'UTC'")
+                current_utc = cur.fetchone()[0]
+                return current_utc
+            finally:
+                cur.close()
+                conn.close()
+
+    # -------------------------
+    # 🧹 Unified Expiry Method - Handles DELETION of expired bookings
+    # -------------------------
+    def _expire_old_bookings_for_show(self, conn, cur, show_id=None):
+        """
+        DELETE old PENDING bookings and their associated seats.
+        If show_id is provided, only delete for specific show.
+        If show_id is None, delete for all shows.
+        
+        NOTE: This method DELETES records. Use only when you need to free up seats.
+        """
+        try:
+            # Get current UTC time from database
+            current_utc = self._get_current_utc(cur)
+            
+            # Build the WHERE clause based on whether show_id is provided
+            show_filter = ""
+            params = [current_utc]
+            if show_id:
+                show_filter = " AND show_id = %s"
+                params.append(show_id)
+            
+            print(f"[INFO] Deleting expired bookings at {current_utc.isoformat()} for show_id: {show_id if show_id else 'ALL'}")
+            
+            # Step 1: Delete booking_seats for expired bookings
+            cur.execute(f"""
+                DELETE FROM booking_seats
+                WHERE booking_id IN (
+                    SELECT id 
+                    FROM bookings 
+                    WHERE status = 'PENDING'
+                      AND expires_at < %s
+                      {show_filter}
+                )
+            """, params)
+            
+            deleted_seats_count = cur.rowcount
+            
+            # Step 2: Delete the expired bookings
+            cur.execute(f"""
+                DELETE FROM bookings
+                WHERE status = 'PENDING'
+                  AND expires_at < %s
+                  {show_filter}
+                RETURNING id, show_id
+            """, params)
+            
+            deleted_bookings = cur.fetchall()
+            deleted_bookings_count = len(deleted_bookings)
+            
+            # Commit the changes
+            conn.commit()
+            
+            if deleted_bookings_count > 0 or deleted_seats_count > 0:
+                print(f"[INFO] Deleted {deleted_bookings_count} expired bookings and {deleted_seats_count} seat reservations for show_id: {show_id if show_id else 'ALL'}")
+                
+            return {
+                "deleted_bookings_count": deleted_bookings_count,
+                "deleted_seats_count": deleted_seats_count,
+                "deleted_bookings": deleted_bookings
+            }
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"[ERROR] Failed to delete expired bookings for show_id {show_id if show_id else 'ALL'}: {e}")
+            raise e
+    async def invalidate_cache_for_booking(self, booking_id,seat_ids):
+        for seat_id in seat_ids:
+            cache_key = CacheKey.seat_lock(booking_id, seat_id)
+            # Invalidate the cache for this seat
+            await get_redis().delete(cache_key)
+    # -------------------------
+    # 🔍 Check already CONFIRMED seats
     # -------------------------
     def check_seats_taken(self, show_id, seat_ids):
-
         conn = get_connection()
         cur = conn.cursor()
 
         try:
-            # First, mark expired bookings as EXPIRED
+            # Delete expired bookings to free up seats before checking
             self._expire_old_bookings_for_show(conn, cur, show_id)
-            
+
             query = """
                 SELECT bs.seat_id
                 FROM booking_seats bs
@@ -39,140 +134,49 @@ class BookingRepository:
             return {
                 "status": "error",
                 "status_code": 500,
-                "message": "Failed to check seats",
-                "error": str(e),
-                "data": []
+                "message": f"Failed to check seats: {str(e)}"
             }
-
         finally:
             cur.close()
             conn.close()
 
     # -------------------------
-    # 🧹 Expire old bookings for a specific show
-    # -------------------------
-    def _expire_old_bookings_for_show(self, conn, cur, show_id):
-        """Mark expired PENDING bookings as EXPIRED for a specific show"""
-        try:
-            cur.execute("""
-                UPDATE bookings
-                SET status = 'EXPIRED'
-                WHERE status = 'PENDING'
-                  AND expires_at < NOW()
-                  AND show_id = %s
-                RETURNING id
-            """, (show_id,))
-            
-            expired_ids = [row[0] for row in cur.fetchall()]
-            
-            if expired_ids:
-                conn.commit()
-                
-            return expired_ids
-            
-        except Exception:
-            conn.rollback()
-            return []
-
-    # -------------------------
-    # 🧹 Expire all old bookings
-    # -------------------------
-    def _expire_old_bookings(self, conn, cur):
-        """Mark expired PENDING bookings as EXPIRED"""
-        try:
-            cur.execute("""
-                UPDATE bookings
-                SET status = 'EXPIRED'
-                WHERE status = 'PENDING'
-                  AND expires_at < NOW()
-                RETURNING id
-            """)
-            
-            expired_ids = [row[0] for row in cur.fetchall()]
-            
-            if expired_ids:
-                conn.commit()
-                
-            return expired_ids
-            
-        except Exception:
-            conn.rollback()
-            return []
-    
-
-    # we need a method to delete all expiredbooking for a show id
-    def delete_expired_bookings_for_show(self, show_id):
-        conn = get_connection()
-        cur = conn.cursor()
-
-        try:
-            cur.execute("""
-                DELETE FROM bookings
-                WHERE status = 'EXPIRED'
-                  AND show_id = %s
-            """, (show_id,))
-            
-            deleted_count = cur.rowcount
-            conn.commit()
-            
-            return {
-                "status": "success",
-                "status_code": 200,
-                "message": f"Deleted {deleted_count} expired bookings for show {show_id}",
-                "data": {"deleted_count": deleted_count}
-            }
-            
-        except Exception as e:
-            conn.rollback()
-            return {
-                "status": "error",
-                "status_code": 500,
-                "message": "Failed to delete expired bookings",
-                "error": str(e),
-                "data": None
-            }
-
-        finally:
-            cur.close()
-            conn.close()
-
-    # -------------------------
-    # 🚀 Create booking (PENDING)
+    # 🚀 Create Booking
     # -------------------------
     def create_booking(self, user_id, show_id, seat_ids, amount):
-
         conn = get_connection()
         cur = conn.cursor()
-
+        
         try:
-            expires_at = datetime.utcnow() + timedelta(minutes=10)
+            # Delete expired bookings for this show first to free up seats
+            self._expire_old_bookings_for_show(conn, cur, show_id)
 
-            # 1️⃣ Insert booking
+            # Get current UTC time from database
+            current_utc = self._get_current_utc(cur)
+            expires_at = current_utc + timedelta(seconds=settings.SEAT_LOCK_TTL)
+
             cur.execute("""
                 INSERT INTO bookings (
                     user_id,
                     show_id,
                     status,
                     total_amount,
-                    idempotency_key,
                     expires_at,
                     created_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 user_id,
                 show_id,
                 "PENDING",
                 amount,
-                None,
                 expires_at,
-                datetime.utcnow()
+                current_utc
             ))
 
             booking_id = cur.fetchone()[0]
 
-            # 2️⃣ Insert seats
             cur.executemany("""
                 INSERT INTO booking_seats (booking_id, seat_id)
                 VALUES (%s, %s)
@@ -180,234 +184,101 @@ class BookingRepository:
 
             conn.commit()
 
+            expires_at_iso = expires_at.isoformat() if expires_at else None
+
             return {
                 "status": "success",
                 "status_code": 201,
-                "message": "Booking created (PENDING)",
                 "data": {
                     "booking_id": booking_id,
-                    "status": "PENDING",
-                    "total_amount": float(amount),
                     "seat_ids": seat_ids,
                     "show_id": show_id,
-                    "expires_at": expires_at.isoformat()
+                    "total_amount": float(amount),
+                    "expires_at": expires_at_iso
                 }
             }
 
         except Exception as e:
             conn.rollback()
-
             return {
                 "status": "error",
                 "status_code": 500,
-                "message": "Booking creation failed",
-                "error": str(e),
-                "data": None
+                "message": str(e)
             }
 
         finally:
             cur.close()
             conn.close()
-    
+
     # -------------------------
-    # 📖 Get booking by ID (with expiry check)
+    # 📖 Get booking - NO DELETION, just check and return status
     # -------------------------
     def get_booking(self, booking_id):
         conn = get_connection()
         cur = conn.cursor()
-        
+
         try:
-            # Clean up expired bookings first
-            self._expire_old_bookings(conn, cur)
-            
             # Get booking details
             cur.execute("""
-                SELECT id, user_id, show_id, status, total_amount, expires_at, created_at
+                SELECT id, user_id, show_id, status, total_amount, expires_at
                 FROM bookings
                 WHERE id = %s
             """, (booking_id,))
-            
-            booking_row = cur.fetchone()
-            
-            if not booking_row:
-                return {
-                    "status": "error",
-                    "status_code": 404,
-                    "message": "Booking not found",
-                    "data": None
-                }
-            
-            # Get seat IDs for this booking
-            cur.execute("""
-                SELECT seat_id
-                FROM booking_seats
-                WHERE booking_id = %s
-            """, (booking_id,))
-            
-            seat_rows = cur.fetchall()
-            seat_ids = [row[0] for row in seat_rows]
-            
-            return {
-                "status": "success",
-                "data": {
-                    "booking_id": booking_row[0],
-                    "user_id": booking_row[1],
-                    "show_id": booking_row[2],
-                    "status": booking_row[3],
-                    "total_amount": float(booking_row[4]) if booking_row[4] else 0,
-                    "expires_at": booking_row[5].isoformat() if booking_row[5] else None,
-                    "created_at": booking_row[6].isoformat() if booking_row[6] else None,
-                    "seat_ids": seat_ids
-                }
-            }
-            
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": str(e),
-                "data": None
-            }
-        finally:
-            cur.close()
-            conn.close()
 
-    # -------------------------
-    # 👤 Get user bookings
-    # -------------------------
-    def get_user_bookings(self, user_id):
-        conn = get_connection()
-        cur = conn.cursor()
-        
-        try:
-            # Clean up expired bookings first
-            self._expire_old_bookings(conn, cur)
-            
-            # Get all bookings for user
-            cur.execute("""
-                SELECT id, show_id, status, total_amount, expires_at, created_at
-                FROM bookings
-                WHERE user_id = %s
-                ORDER BY created_at DESC
-            """, (user_id,))
-            
-            bookings = []
-            for row in cur.fetchall():
-                # Get seat IDs for each booking
-                cur.execute("""
-                    SELECT seat_id
-                    FROM booking_seats
-                    WHERE booking_id = %s
-                """, (row[0],))
-                
-                seat_ids = [r[0] for r in cur.fetchall()]
-                
-                bookings.append({
-                    "booking_id": row[0],
-                    "show_id": row[1],
-                    "status": row[2],
-                    "total_amount": float(row[3]) if row[3] else 0,
-                    "expires_at": row[4].isoformat() if row[4] else None,
-                    "created_at": row[5].isoformat() if row[5] else None,
-                    "seat_ids": seat_ids
-                })
-            
-            return {
-                "status": "success",
-                "data": bookings
-            }
-            
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": str(e),
-                "data": []
-            }
-        finally:
-            cur.close()
-            conn.close()
-
-    # -------------------------
-    # ✅ Confirm booking (with expiry check)
-    # -------------------------
-    def confirm_booking(self, booking_id):
-        conn = get_connection()
-        cur = conn.cursor()
-        
-        try:
-            # Check if booking exists and is pending
-            cur.execute("""
-                SELECT status, expires_at
-                FROM bookings
-                WHERE id = %s
-            """, (booking_id,))
-            
             row = cur.fetchone()
-            
+
             if not row:
-                return {
-                    "status": "error",
-                    "status_code": 404,
-                    "message": "Booking not found",
-                    "data": None
-                }
+                return {"status": "error", "message": "Booking not found"}
+
+            booking_id, user_id, show_id, status, total_amount, expires_at = row
             
-            status, expires_at = row
-            
-            if status != "PENDING":
-                return {
-                    "status": "error",
-                    "status_code": 400,
-                    "message": f"Cannot confirm booking with status: {status}",
-                    "data": None
-                }
-            
-            # Check if expired
-            if expires_at and expires_at < datetime.utcnow():
-                # Mark as expired first
-                cur.execute("""
-                    UPDATE bookings
-                    SET status = 'EXPIRED'
-                    WHERE id = %s
-                """, (booking_id,))
-                conn.commit()
+            # Check if the booking is expired but not yet deleted
+            if status == 'PENDING' and expires_at:
+                # Get current time from database
+                current_utc = self._get_current_utc(cur)
                 
-                return {
-                    "status": "error",
-                    "status_code": 410,
-                    "message": "Booking has expired",
-                    "data": None
-                }
+                if expires_at < current_utc:
+                    # Return as EXPIRED without deleting
+                    return {
+                        "status": "success",
+                        "data": {
+                            "booking_id": booking_id,
+                            "user_id": user_id,
+                            "show_id": show_id,
+                            "status": "EXPIRED",
+                            "total_amount": float(total_amount),
+                            "expires_at": expires_at.isoformat() if hasattr(expires_at, 'isoformat') else str(expires_at),
+                            "seat_ids": []
+                        }
+                    }
             
-            # Confirm the booking
-            cur.execute("""
-                UPDATE bookings
-                SET status = 'CONFIRMED', expires_at = NULL
-                WHERE id = %s AND status = 'PENDING'
-                RETURNING id, status
-            """, (booking_id,))
-            
-            row = cur.fetchone()
-            conn.commit()
-            
+            # Get seats only for non-expired bookings
+            seat_ids = []
+            if status != 'EXPIRED':
+                cur.execute("""
+                    SELECT seat_id FROM booking_seats WHERE booking_id = %s
+                """, (booking_id,))
+                seat_ids = [r[0] for r in cur.fetchall()]
+
+            expires_at_iso = None
+            if expires_at:
+                expires_at_iso = expires_at.isoformat() if hasattr(expires_at, 'isoformat') else str(expires_at)
+
             return {
                 "status": "success",
-                "status_code": 200,
-                "message": "Booking confirmed",
                 "data": {
-                    "booking_id": row[0],
-                    "status": row[1]
+                    "booking_id": booking_id,
+                    "user_id": user_id,
+                    "show_id": show_id,
+                    "status": status,
+                    "total_amount": float(total_amount),
+                    "expires_at": expires_at_iso,
+                    "seat_ids": seat_ids
                 }
             }
-            
+
         except Exception as e:
-            conn.rollback()
-            return {
-                "status": "error",
-                "status_code": 500,
-                "message": "Confirmation failed",
-                "error": str(e),
-                "data": None
-            }
+            return {"status": "error", "message": str(e)}
         finally:
             cur.close()
             conn.close()
@@ -416,86 +287,255 @@ class BookingRepository:
     # ❌ Cancel booking
     # -------------------------
     def cancel_booking(self, booking_id):
-
         conn = get_connection()
         cur = conn.cursor()
 
         try:
-            # Don't allow cancelling expired bookings
+            # Get booking info first
+            cur.execute("""
+                SELECT status, show_id, expires_at FROM bookings WHERE id = %s
+            """, (booking_id,))
+            
+            row = cur.fetchone()
+            
+            if not row:
+                return {"status": "error", "message": "Booking not found"}
+            
+            booking_status, show_id, expires_at = row
+            
+            if booking_status == 'CONFIRMED':
+                return {"status": "error", "message": "Cannot cancel confirmed booking"}
+            
+            if booking_status == 'EXPIRED':
+                # invalide cache if any and return error
+                
+                return {"status": "error", "message": "Booking already expired"}
+            
+            # Check if PENDING but expired
+            if booking_status == 'PENDING' and expires_at:
+                current_utc = self._get_current_utc(cur)
+                if expires_at < current_utc:
+                    return {"status": "error", "message": "Booking already expired"}
+            
+         
+            
+            # Cancel the booking if it's still PENDING
             cur.execute("""
                 UPDATE bookings
                 SET status = 'CANCELLED'
-                WHERE id = %s AND status IN ('PENDING', 'CONFIRMED')
-                RETURNING id, status
+                WHERE id = %s AND status = 'PENDING'
+                RETURNING id
+            """, (booking_id,))
+
+            row = cur.fetchone()
+            conn.commit()
+
+            if not row:
+                return {"status": "error", "message": "Booking cannot be cancelled"}
+
+            return {
+                "status": "success",
+                "message": "Booking cancelled successfully",
+                "data": {"booking_id": row[0]}
+            }
+
+        except Exception as e:
+            conn.rollback()
+            return {"status": "error", "message": str(e)}
+
+        finally:
+            cur.close()
+            conn.close()
+    def failed_booking(self, booking_id,user_id):
+        conn=get_connection()
+        cur=conn.cursor()
+        try:
+            # fetch booking info first
+            cur.execute("""
+                SELECT status, show_id, expires_at FROM bookings WHERE id = %s AND user_id = %s
+            """, (booking_id, user_id))
+            row = cur.fetchone()
+            if not row:
+                return {"status": "error", "message": "Booking not found"}
+            booking_status, show_id, expires_at = row
+            if booking_status == 'CONFIRMED':
+                return {"status": "error", "message": "Cannot mark confirmed booking as failed"}
+            # now we need to fetch seats for this booking to invalidate cache
+            cur.execute("""
+                SELECT seat_id FROM booking_seats WHERE booking_id = %s
+            """, (booking_id,))
+            seat_ids = [r[0] for r in cur.fetchall()]
+            # now delete the booking and associated seats
+            cur.execute("""
+                DELETE FROM booking_seats WHERE booking_id = %s
+            """, (booking_id,))
+            cur.execute("""
+                DELETE FROM bookings WHERE id = %s
+            """, (booking_id,))
+            conn.commit()
+            return {
+                "status": "success",
+                "message": "Booking marked as failed and deleted",
+                "data": {
+                    "booking_id": booking_id,
+                    "show_id": show_id,
+                    "seat_ids": seat_ids
+                }
+            }
+        except Exception as e:
+            conn.rollback()
+            return {"status": "error", "message": str(e)}
+        
+    # -------------------------
+    # 💳 CONFIRM BOOKING + PAYMENT
+    # -------------------------
+    def confirm_booking_with_payment(
+        self,
+        booking_id,
+        amount,
+        wallet_name,
+        wallet_phone,
+        idempotency_key=None
+    ):
+        conn = get_connection()
+        cur = conn.cursor()
+
+        try:
+            # -------------------------
+            # 1️⃣ Idempotency check
+            # -------------------------
+            if idempotency_key:
+                cur.execute("""
+                    SELECT id, transaction_id
+                    FROM payments
+                    WHERE idempotency_key = %s
+                """, (idempotency_key,))
+
+                existing = cur.fetchone()
+
+                if existing:
+                    return {
+                        "status": "success",
+                        "message": "Already processed",
+                        "data": {
+                            "payment_id": existing[0],
+                            "transaction_id": existing[1]
+                        }
+                    }
+
+            # -------------------------
+            # 2️⃣ Get booking info
+            # -------------------------
+            cur.execute("""
+                SELECT status, expires_at, total_amount, show_id
+                FROM bookings
+                WHERE id = %s
             """, (booking_id,))
 
             row = cur.fetchone()
 
             if not row:
-                return {
-                    "status": "error",
-                    "status_code": 404,
-                    "message": "Booking not found or already expired",
-                    "data": None
-                }
+                return {"status": "error", "message": "Booking not found"}
+
+            status, expires_at, total_amount, show_id = row
+
+            if status != "PENDING":
+                return {"status": "error", "message": f"Invalid status {status}"}
+
+            # Check if expired
+            if expires_at:
+                current_utc = self._get_current_utc(cur)
+                if expires_at < current_utc:
+                    # Delete expired bookings for this show to clean up
+                    self._expire_old_bookings_for_show(conn, cur, show_id)
+                    return {"status": "error", "message": "Booking expired"}
+            
+            # -------------------------
+            # 3️⃣ Confirm booking
+            # -------------------------
+            cur.execute("""
+                UPDATE bookings
+                SET status = 'CONFIRMED', expires_at = NULL
+                WHERE id = %s AND status = 'PENDING'
+                RETURNING id
+            """, (booking_id,))
+
+            if not cur.fetchone():
+                conn.rollback()
+                return {"status": "error", "message": "Booking could not be confirmed"}
+
+            # -------------------------
+            # 4️⃣ Create payment
+            # -------------------------
+            transaction_id = str(uuid.uuid4())
+            current_utc = self._get_current_utc(cur)
+
+            cur.execute("""
+                INSERT INTO payments (
+                    booking_id,
+                    transaction_id,
+                    amount,
+                    status,
+                    idempotency_key,
+                    wallet_name,
+                    wallet_phone,
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                booking_id,
+                transaction_id,
+                amount or total_amount,
+                "SUCCESS",
+                idempotency_key,
+                wallet_name,
+                wallet_phone,
+                current_utc
+            ))
+
+            payment_id = cur.fetchone()[0]
 
             conn.commit()
 
             return {
                 "status": "success",
-                "status_code": 200,
-                "message": "Booking cancelled",
+                "message": "Booking confirmed + payment created",
                 "data": {
-                    "booking_id": row[0],
-                    "status": row[1]
+                    "booking_id": booking_id,
+                    "payment_id": payment_id,
+                    "transaction_id": transaction_id
                 }
             }
 
         except Exception as e:
             conn.rollback()
+            return {"status": "error", "message": str(e)}
 
+        finally:
+            cur.close()
+            conn.close()
+
+    # -------------------------
+    # 🧹 Manual cleanup method for old bookings (can be called by a scheduler)
+    # -------------------------
+    def cleanup_all_expired_bookings(self):
+        """Manually delete expired bookings across all shows"""
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        try:
+            result = self._expire_old_bookings_for_show(conn, cur, show_id=None)
+            return {
+                "status": "success",
+                "message": "Cleanup completed",
+                "data": result
+            }
+        except Exception as e:
             return {
                 "status": "error",
-                "status_code": 500,
-                "message": "Cancellation failed",
-                "error": str(e),
-                "data": None
+                "message": f"Cleanup failed: {str(e)}"
             }
-
-        finally:
-            cur.close()
-            conn.close()
-
-    async def get_by_id(self, booking_id: int):
-        conn = get_connection()
-        cur = conn.cursor()
-
-        try:
-            query = "SELECT * FROM bookings WHERE id = %s"
-            cur.execute(query, (booking_id,))
-            return cur.fetchone()
-        finally:
-            cur.close()
-            conn.close()
-  
-    async def update_status(self, booking_id: int, status: str):
-        conn = get_connection()
-        cur = conn.cursor()
-
-        try:
-            query = """
-                UPDATE bookings
-                SET status = %s
-                WHERE id = %s
-                RETURNING *
-            """
-            cur.execute(query, (status, booking_id))
-            row = cur.fetchone()
-            conn.commit()
-            return row
-        except Exception:
-            conn.rollback()
-            raise
         finally:
             cur.close()
             conn.close()

@@ -15,6 +15,7 @@ class Settings:
     REDIS_PORT = os.getenv("REDIS_PORT", "6379")
     REDIS_USERNAME = os.getenv("REDIS_USERNAME", "default")
     REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+    SEAT_LOCK_TTL = int(os.getenv("SEAT_LOCK_TTL", "120"))
 
 
 

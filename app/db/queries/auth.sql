@@ -13,11 +13,12 @@ CREATE TABLE IF NOT EXISTS users (
 -- =========================
 CREATE TABLE IF NOT EXISTS otp_verifications (
     id              BIGSERIAL PRIMARY KEY,
-    phone_number    VARCHAR(15) NOT NULL,
+    phone_number    VARCHAR(15) UNIQUE NOT NULL,
     otp_code        VARCHAR(6) NOT NULL,
     expires_at      TIMESTAMP NOT NULL,
     verified        BOOLEAN DEFAULT FALSE,
     created_at      TIMESTAMP DEFAULT NOW()
+    
 );
 
 -- =========================

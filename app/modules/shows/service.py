@@ -1,8 +1,8 @@
 import json
-import asyncio
 
 from app.modules.shows.repository import ShowRepository
 from app.config.redis import get_redis
+from app.config.Cache_key import CacheKey   # ✅ import your reusable class
 
 
 CACHE_TTL = 300  # 5 minutes
@@ -15,21 +15,6 @@ class ShowService:
         self.repo = ShowRepository()
 
     # -------------------------
-    # 🔑 Cache Keys
-    # -------------------------
-    def _cache_key(self, from_location: str, to_location: str):
-        return f"shows:{from_location.strip().lower()}:{to_location.strip().lower()}"
-
-    def _seat_cache_key(self, show_id: int):
-        return f"seats:{show_id}"
-
-    def _booked_cache_key(self, show_id: int):
-        return f"seat_booked:{show_id}"
-
-    def _seat_lock_key(self, show_id: int, seat_id: int):
-        return f"seat_lock:{show_id}:{seat_id}"
-
-    # -------------------------
     # 🎬 Create Show
     # -------------------------
     async def create_show(self, data):
@@ -39,13 +24,16 @@ class ShowService:
             "to_location": data.to_location.strip(),
             "departure_time": data.departure_time,
             "price": data.price,
-            "seat_count": data.seat_count
+            "seat_count": data.seat_count,
+            "title": data.title.strip()
         })
 
         redis = get_redis()
         if redis:
             try:
-                await redis.delete(self._cache_key(data.from_location, data.to_location))
+                await redis.delete(
+                    CacheKey.shows(data.from_location, data.to_location)
+                )
             except Exception:
                 pass
 
@@ -61,18 +49,28 @@ class ShowService:
 
         result = self.repo.update_show(show_id, data)
 
-        if old_data:
-            redis = get_redis()
-            if redis:
-                try:
+        redis = get_redis()
+        if redis and old_data:
+            try:
+                # 🔥 invalidate old route cache
+                await redis.delete(
+                    CacheKey.shows(
+                        old_data["from_location"],
+                        old_data["to_location"]
+                    )
+                )
+
+                # 🔥 if location changed → invalidate new route too
+                if hasattr(data, "from_location") and hasattr(data, "to_location"):
                     await redis.delete(
-                        self._cache_key(
-                            old_data["from_location"],
-                            old_data["to_location"]
+                        CacheKey.shows(
+                            data.from_location,
+                            data.to_location
                         )
                     )
-                except Exception:
-                    pass
+
+            except Exception:
+                pass
 
         return result
 
@@ -81,7 +79,7 @@ class ShowService:
     # -------------------------
     async def list_shows(self, from_location, to_location):
 
-        key = self._cache_key(from_location, to_location)
+        key = CacheKey.shows(from_location, to_location)
         redis = get_redis()
 
         if redis:
@@ -115,8 +113,8 @@ class ShowService:
 
         redis = get_redis()
 
-        base_key = self._seat_cache_key(show_id)
-        booked_key = self._booked_cache_key(show_id)
+        base_key = CacheKey.seats(show_id)
+        booked_key = CacheKey.booked_seats(show_id)
 
         # -------------------------
         # 1️⃣ Load seats
@@ -139,7 +137,7 @@ class ShowService:
         seats = seat_map.get("data", [])
 
         # -------------------------
-        # 2️⃣ BOOKED (Redis - CONFIRMED bookings only)
+        # 2️⃣ BOOKED (CONFIRMED)
         # -------------------------
         booked = set()
 
@@ -152,7 +150,7 @@ class ShowService:
                 pass
 
         # -------------------------
-        # 3️⃣ RESERVED (seat locks - temporary holds)
+        # 3️⃣ RESERVED (LOCKS)
         # -------------------------
         reserved = set()
 
@@ -160,15 +158,15 @@ class ShowService:
             try:
                 for seat in seats:
                     seat_id = seat["id"]
-                    key = self._seat_lock_key(show_id, seat_id)
+                    lock_key = CacheKey.seat_lock(show_id, seat_id)
 
-                    if await redis.get(key):
+                    if await redis.get(lock_key):
                         reserved.add(str(seat_id))
             except Exception:
                 pass
 
         # -------------------------
-        # 4️⃣ PENDING (DB - should be treated as RESERVED)
+        # 4️⃣ PENDING (DB fallback)
         # -------------------------
         pending_seats = set()
 
@@ -180,7 +178,7 @@ class ShowService:
             pass
 
         # -------------------------
-        # 5️⃣ Merge status (PENDING → RESERVED)
+        # 5️⃣ Merge Status
         # -------------------------
         for seat in seats:
             sid = str(seat["id"])
