@@ -1,0 +1,235 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 8px 0;
+}
+
+/* ── BUS SHELL ── */
+.bus {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 280px;
+}
+
+/* Front */
+.front {
+  width: 88%;
+  background: linear-gradient(180deg, var(--c-terra-d) 0%, var(--c-terra) 100%);
+  border-radius: 36px 36px 0 0;
+  padding: 10px 14px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.windshield {
+  width: 78%;
+  height: 44px;
+  background: linear-gradient(135deg,#7ec8e3 0%,#b8e4f4 60%,#7ec8e3 100%);
+  border-radius: 10px 10px 3px 3px;
+  border: 2px solid rgba(255,255,255,0.45);
+  position: relative;
+  overflow: hidden;
+}
+.wiper, .wiperR {
+  position: absolute;
+  bottom: 7px;
+  height: 2px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 2px;
+  transform-origin: left center;
+}
+.wiper  { left: 12%; width: 36%; transform: rotate(-20deg); }
+.wiperR { right: 12%; width: 36%; transform: rotate(20deg) scaleX(-1); transform-origin: right center; }
+.frontBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-bottom: 7px;
+}
+.headlight {
+  width: 18px; height: 10px;
+  background: linear-gradient(90deg,#fff9c4,#ffe066);
+  border-radius: 3px;
+  box-shadow: 0 0 6px rgba(255,220,50,0.7);
+}
+.busName {
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.85);
+}
+
+/* Cabin */
+.cabin {
+  width: 100%;
+  background: var(--c-bg3);
+  border-left: 8px solid var(--c-terra-d);
+  border-right: 8px solid var(--c-terra-d);
+}
+.driverRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px dashed var(--c-border);
+  background: var(--c-surface);
+}
+.driverSeat, .doorBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 1.2rem;
+}
+.tiny { font-size: 0.5rem; color: var(--c-muted); font-weight: 600; letter-spacing: 0.05em; font-family: var(--font-body); }
+.door {
+  width: 22px; height: 30px;
+  border: 2px solid var(--c-terra);
+  border-radius: 3px 3px 0 0;
+  background: var(--c-surface2);
+  position: relative;
+}
+.door::after {
+  content: '';
+  position: absolute;
+  right: 3px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 3px;
+  background: var(--c-terra-l);
+  border-radius: 50%;
+}
+
+.seatsWrap {
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+}
+.group {
+  flex: 1;
+  display: flex;
+  gap: 5px;
+  justify-content: center;
+}
+.aisle {
+  width: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.aisleLabel {
+  font-size: 0.55rem;
+  font-weight: 800;
+  color: var(--c-border2);
+  font-family: var(--font-display);
+  letter-spacing: 0.05em;
+}
+
+/* Seat */
+.seat {
+  width: 38px; height: 40px;
+  border-radius: 6px 6px 4px 4px;
+  border: 1.5px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s cubic-bezier(0.34,1.56,0.64,1);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+.seat::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 6px;
+  background: currentColor;
+  opacity: 0.3;
+  border-radius: 4px 4px 0 0;
+}
+.seat:not(:disabled):hover {
+  transform: translateY(-3px) scale(1.07);
+  box-shadow: 0 5px 12px rgba(0,0,0,0.3);
+}
+.seat:disabled { cursor: not-allowed; opacity: 0.8; }
+
+.seatLbl {
+  font-size: 0.55rem;
+  font-weight: 800;
+  font-family: var(--font-display);
+  position: relative;
+  z-index: 1;
+  margin-top: 5px;
+}
+
+/* States */
+.avail  { background: var(--seat-avail-bg);  border-color: var(--seat-avail-bdr);  color: var(--c-green); }
+.booked { background: var(--seat-booked-bg); border-color: var(--seat-booked-bdr); color: var(--c-red);   }
+.rsvd   { background: var(--seat-rsvd-bg);   border-color: var(--seat-rsvd-bdr);   color: var(--c-amber); }
+.sel    {
+  background: var(--seat-sel-bg);
+  border-color: var(--seat-sel-bdr);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(212,98,42,0.4);
+}
+.sel::before { background: rgba(255,255,255,0.4); opacity: 1; }
+
+/* Rear */
+.rear {
+  width: 100%;
+  background: linear-gradient(0deg, var(--c-terra-d) 0%, var(--c-terra) 100%);
+  border-radius: 0 0 14px 14px;
+  padding: 6px 14px 10px;
+  display: flex; justify-content: center;
+}
+.rearLights { display: flex; justify-content: space-between; width: 80%; }
+.tailLight {
+  width: 28px; height: 8px;
+  background: linear-gradient(90deg,#ef4444,#dc2626);
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(239,68,68,0.8);
+}
+
+/* Legend */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  justify-content: center;
+}
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--c-muted);
+  font-weight: 500;
+}
+.legendDot {
+  width: 14px; height: 14px;
+  border-radius: 3px;
+  border: 1.5px solid;
+  flex-shrink: 0;
+}
+.legendDot.avail  { background: var(--seat-avail-bg);  border-color: var(--seat-avail-bdr);  }
+.legendDot.booked { background: var(--seat-booked-bg); border-color: var(--seat-booked-bdr); }
+.legendDot.rsvd   { background: var(--seat-rsvd-bg);   border-color: var(--seat-rsvd-bdr);   }
+.legendDot.sel    { background: var(--seat-sel-bg);     border-color: var(--seat-sel-bdr);    }
+
+@media (max-width: 360px) {
+  .seat { width: 34px; height: 36px; }
+  .bus { max-width: 240px; }
+}
