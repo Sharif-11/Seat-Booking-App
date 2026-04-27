@@ -91,21 +91,11 @@ class ShowRepository:
 
             conn.commit()
 
-            return {
-                "status": "success",
-                "status_code": 201,
-                "message": "Show created successfully",
-                "data": show
-            }
+            return show
 
         except Exception as e:
             conn.rollback()
-            return {
-                "status": "error",
-                "status_code": 500,
-                "message": str(e),
-                "data": None
-            }
+            return None
 
         finally:
             cur.close()
@@ -141,12 +131,7 @@ class ShowRepository:
                 params.append(data.price)
 
             if not updates:
-                return {
-                    "status": "error",
-                    "status_code": 400,
-                    "message": "No fields to update",
-                    "data": None
-                }
+                return None  # No fields to update
 
             params.append(show_id)
 
@@ -161,30 +146,16 @@ class ShowRepository:
             row = cur.fetchone()
 
             if not row:
-                return {
-                    "status": "error",
-                    "status_code": 404,
-                    "message": "Show not found",
-                    "data": None
-                }
+                return None
+                
 
             conn.commit()
 
-            return {
-                "status": "success",
-                "status_code": 200,
-                "message": "Show updated successfully",
-                "data": self._format_show(row)
-            }
+            return self._format_show(row)
 
         except Exception as e:
             conn.rollback()
-            return {
-                "status": "error",
-                "status_code": 500,
-                "message": str(e),
-                "data": None
-            }
+            return None
 
         finally:
             cur.close()
@@ -204,18 +175,10 @@ class ShowRepository:
             row = cur.fetchone()
 
             if not row:
-                return {
-                    "status": "error",
-                    "status_code": 404,
-                    "message": "Show not found",
-                    "data": None
-                }
+                return None
 
-            return {
-                "status": "success",
-                "status_code": 200,
-                "data": self._format_show(row)
-            }
+            return  self._format_show(row)
+            
 
         finally:
             cur.close()
@@ -246,12 +209,8 @@ class ShowRepository:
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
 
-            return {
-                "status": "success",
-                "status_code": 200,
-                "data": [self._format_show(r) for r in rows]
-            }
-
+            return [self._format_show(r) for r in rows]
+           
         finally:
             cur.close()
             conn.close()
@@ -271,64 +230,15 @@ class ShowRepository:
 
             rows = cur.fetchall()
 
-            return {
-                "status": "success",
-                "status_code": 200,
-                "data": [{"id": r[0], "seat_label": r[1]} for r in rows]
-            }
+            return  [{"id": r[0], "seat_label": r[1]} for r in rows]
+            
 
         finally:
             cur.close()
             conn.close()
 
     # ---------------- PENDING SEATS (FIXED TIMESTAMP) ----------------
-    def get_pending_seats(self, show_id):
-        conn = get_connection()
-        cur = conn.cursor()
-
-        try:
-            # FIXED: Use NOW() AT TIME ZONE 'UTC' for consistent UTC timezone
-            cur.execute("""
-                UPDATE bookings
-                SET status = 'EXPIRED'
-                WHERE status = 'PENDING'
-                  AND expires_at < (NOW() AT TIME ZONE 'UTC')
-                  AND show_id = %s
-            """, (show_id,))
-            conn.commit()
-
-            # FIXED: Also use NOW() AT TIME ZONE 'UTC' in the SELECT query
-            cur.execute("""
-                SELECT bs.seat_id
-                FROM booking_seats bs
-                JOIN bookings b ON b.id = bs.booking_id
-                WHERE b.show_id = %s
-                  AND b.status = 'PENDING'
-                  AND b.expires_at > (NOW() AT TIME ZONE 'UTC')
-            """, (show_id,))
-
-            rows = cur.fetchall()
-
-            return {
-                "status": "success",
-                "status_code": 200,
-                "data": [r[0] for r in rows]
-            }
-
-        except Exception as e:
-            return {
-                "status": "error",
-                "status_code": 500,
-                "message": str(e),
-                "data": []
-            }
-
-        finally:
-            cur.close()
-            conn.close()
-
-    # ---------------- ADDITIONAL HELPER: GET AVAILABLE SEATS ----------------
-    def get_available_seats(self, show_id):
+  
         """Get all seats that are not confirmed or pending for a show"""
         conn = get_connection()
         cur = conn.cursor()

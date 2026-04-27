@@ -539,3 +539,31 @@ class BookingRepository:
         finally:
             cur.close()
             conn.close()
+    def get_booked_seats_for_show(self, show_id):
+        conn = get_connection()
+        cur = conn.cursor()
+
+        try:
+            query = """
+                SELECT bs.seat_id
+                FROM booking_seats bs
+                JOIN bookings b ON b.id = bs.booking_id
+                WHERE b.show_id = %s
+                  AND b.status = 'CONFIRMED'
+            """
+
+            cur.execute(query, (show_id,))
+            rows = cur.fetchall()
+
+            booked = set(row[0] for row in rows)
+            # convert each item to int and return as set
+            booked = {int(x) for x in booked}
+            
+
+            return booked
+        except Exception as e:
+            print(f"Error occurred while fetching booked seats: {e}")
+            return set()
+        finally:
+            cur.close()
+            conn.close()

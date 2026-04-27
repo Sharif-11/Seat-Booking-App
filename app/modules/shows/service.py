@@ -1,6 +1,8 @@
 import json
 
+from app.modules.redis.booking_gateway import BookingGateway
 from app.modules.shows.repository import ShowRepository
+from app.modules.booking.repository import BookingRepository
 from app.config.redis import get_redis
 from app.config.Cache_key import CacheKey   # ✅ import your reusable class
 
@@ -13,6 +15,7 @@ class ShowService:
 
     def __init__(self):
         self.repo = ShowRepository()
+        self.booking_repo = BookingRepository()
 
     # -------------------------
     # 🎬 Create Show
@@ -28,16 +31,18 @@ class ShowService:
             "title": data.title.strip()
         })
 
-        redis = get_redis()
-        if redis:
+        if result is not None:
             try:
-                await redis.delete(
-                    CacheKey.shows(data.from_location, data.to_location)
-                )
+             await BookingGateway().delete_trips(data.from_location.strip(), data.to_location.strip())
             except Exception:
-                pass
+             pass
 
-        return result
+        return {
+            "status": "success" if result else "error",
+            "status_code": 200 if result else 500,
+            "message": "Show created successfully" if result else "Failed to create show",
+            "data": result
+        }
 
     # -------------------------
     # ✏️ Update Show
@@ -45,60 +50,56 @@ class ShowService:
     async def update_show(self, show_id, data):
 
         old = self.repo.get_show(show_id)
-        old_data = old.get("data") if old else None
+        old_data = old if old else None
 
         result = self.repo.update_show(show_id, data)
 
-        redis = get_redis()
-        if redis and old_data:
+        if result is not None and old_data is not None:
             try:
-                # 🔥 invalidate old route cache
-                await redis.delete(
-                    CacheKey.shows(
-                        old_data["from_location"],
-                        old_data["to_location"]
-                    )
-                )
-
-                # 🔥 if location changed → invalidate new route too
-                if hasattr(data, "from_location") and hasattr(data, "to_location"):
-                    await redis.delete(
-                        CacheKey.shows(
-                            data.from_location,
-                            data.to_location
-                        )
-                    )
-
+                await BookingGateway().delete_trips(old_data["from_location"], old_data["to_location"])
+                await BookingGateway().delete_trips(result["from_location"], result["to_location"])
             except Exception:
                 pass
-
-        return result
+        return {
+            "status": "success" if result else "error",
+            "status_code": 200 if result else 500,
+            "message": "Show updated successfully" if result else "Failed to update show",
+            "data": result
+        }
 
     # -------------------------
     # 🔍 List Shows
     # -------------------------
     async def list_shows(self, from_location, to_location):
 
-        key = CacheKey.shows(from_location, to_location)
-        redis = get_redis()
+         cached_result=await BookingGateway().get_trips(from_loc=str(from_location), to_loc=str(to_location))
+         if cached_result is not None:
+              return {
+                "data": cached_result,
+                "success": True,
+                "message": "Trips fetched successfully",
+                "status_code": 200
+              }
 
-        if redis:
-            try:
-                cached = await redis.get(key)
-                if cached:
-                    return json.loads(cached)
-            except Exception:
-                pass
 
-        result = self.repo.list_shows(from_location, to_location)
+         result = self.repo.list_shows(from_location, to_location)
+         if result:
+             try:
+                 await BookingGateway().set_trips(from_location, to_location, result)
+             except Exception:
+                 pass
+         return {
+            "data": result,
+            "success": bool(result),
+            "message": "Trips fetched successfully" if result else "No trips found",
+            "status_code": 200 if result else 404
+         }
+            
+            
 
-        if redis:
-            try:
-                await redis.set(key, json.dumps(result), ex=CACHE_TTL)
-            except Exception:
-                pass
+     
 
-        return result
+        
 
     # -------------------------
     # 🎫 Get Show
@@ -110,84 +111,54 @@ class ShowService:
     # 💺 SEAT MAP (FULL STATUS SYSTEM)
     # -------------------------
     async def get_seat_map(self, show_id):
-
-        redis = get_redis()
-
-        base_key = CacheKey.seats(show_id)
-        booked_key = CacheKey.booked_seats(show_id)
-
-        # -------------------------
-        # 1️⃣ Load seats
-        # -------------------------
-        if redis:
-            try:
-                cached = await redis.get(base_key)
-
-                if cached:
-                    seat_map = json.loads(cached)
-                else:
-                    seat_map = self.repo.get_seats_by_show(show_id)
-                    await redis.set(base_key, json.dumps(seat_map), ex=CACHE_TTL)
-
-            except Exception:
-                seat_map = self.repo.get_seats_by_show(show_id)
-        else:
-            seat_map = self.repo.get_seats_by_show(show_id)
-
-        seats = seat_map.get("data", [])
-
-        # -------------------------
-        # 2️⃣ BOOKED (CONFIRMED)
-        # -------------------------
-        booked = set()
-
-        if redis:
-            try:
-                raw = await redis.get(booked_key)
-                if raw:
-                    booked = set(map(str, json.loads(raw)))
-            except Exception:
-                pass
-
-        # -------------------------
-        # 3️⃣ RESERVED (LOCKS)
-        # -------------------------
-        reserved = set()
-
-        if redis:
-            try:
-                for seat in seats:
-                    seat_id = seat["id"]
-                    lock_key = CacheKey.seat_lock(show_id, seat_id)
-
-                    if await redis.get(lock_key):
-                        reserved.add(str(seat_id))
-            except Exception:
-                pass
-
-        # -------------------------
-        # 4️⃣ PENDING (DB fallback)
-        # -------------------------
-        pending_seats = set()
-
+        # =====================================================
+        # 🚀 GET FROM CACHE FIRST
+        # =====================================================
         try:
-            db_pending = self.repo.get_pending_seats(show_id)
-            if db_pending and db_pending.get("data"):
-                pending_seats = set(map(str, db_pending["data"]))
+            cached = await BookingGateway().get_seat_state(show_id)
+           
+            print("Cached seat map:", cached)  # Debug log
+            if cached is not None:
+                return {
+                    "status": "success",
+                    "status_code": 200,
+                    "data": cached
+                }
         except Exception:
-            pass
+            seat_map=self.repo.get_seats_by_show(show_id)
+            seat_booked=self.booking_repo.get_booked_seats_for_show(show_id)
+            seat_reserved=set()
+            try:
+                 seat_reserved=await BookingGateway().get_reserved_seats(show_id)
+            except Exception:
+                pass
+            # convert set to list for JSON serialization
+            seat_booked = list(seat_booked)
+            try:
+                await BookingGateway().set_seat_map(show_id, seat_map)
+                await BookingGateway().confirm_booking(show_id, seat_booked)
+            except Exception:
+                pass
+            seat_reserved = list(seat_reserved)
+            # we need to return seat_map with status for each seat
+            seat_state = []
+            for seat in seat_map:
+                seat_id = seat["id"]
+                if seat_id in seat_booked:
+                    status = "BOOKED"
+                elif seat_id in seat_reserved:
+                    status = "RESERVED"
+                else:
+                    status = "AVAILABLE"
+                seat_state.append({
+                    "id": seat_id,
+                    "seat_label": seat["seat_label"],
+                    "status": status
+                })
+            return {
+                "status": "success",
+                "status_code": 200,
+                "data": seat_state
+            }
 
-        # -------------------------
-        # 5️⃣ Merge Status
-        # -------------------------
-        for seat in seats:
-            sid = str(seat["id"])
-
-            if sid in booked:
-                seat["status"] = "BOOKED"
-            elif sid in reserved or sid in pending_seats:
-                seat["status"] = "RESERVED"
-            else:
-                seat["status"] = "AVAILABLE"
-
-        return seat_map
+            

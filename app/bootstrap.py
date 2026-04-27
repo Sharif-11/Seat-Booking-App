@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from app.config.postgres import init_db, close_db
-from app.config.redis import init_redis, close_redis
+from app.modules.redis.redis_connection import init_redis, close_redis
 from app.websocket.manager import ws_manager
 
 @asynccontextmanager

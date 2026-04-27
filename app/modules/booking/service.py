@@ -5,6 +5,7 @@ from app.modules.booking.repository import BookingRepository
 from app.modules.shows.repository import ShowRepository
 from app.config.Cache_key import CacheKey
 from app.config.settings import settings
+from app.modules.redis.booking_gateway import BookingGateway
 
 
 class BookingService:
@@ -24,100 +25,108 @@ class BookingService:
         seat_ids = list(set(payload.seat_ids))
         user_id = user["user_id"]
 
-        booking_lock_key = CacheKey.booking_lock(show_id)
+        # booking_lock_key = CacheKey.booking_lock(show_id)
+        booking_gateway = BookingGateway()
+        result=await booking_gateway.reserve_seats(show_id, seat_ids, user_id)
+        print(f"Booking gateway reserve_seats result: {result}")
+        return {
+            "status": "success" if result == 1 else "error",
+            "status_code": 200 if result == 1 else 409,
+            "message": "Seats reserved successfully" if result == 1 else "Some seats are already reserved or booked"
+        }
 
-        if redis:
-            lock = await redis.set(booking_lock_key, "1", nx=True, ex=5)
-            if not lock:
-                return {
-                    "status": "error",
-                    "status_code": 429,
-                    "message": "Too many booking requests"
-                }
+        # if redis:
+        #     lock = await redis.set(booking_lock_key, "1", nx=True, ex=5)
+        #     if not lock:
+        #         return {
+        #             "status": "error",
+        #             "status_code": 429,
+        #             "message": "Too many booking requests"
+        #         }
 
-        try:
-            show_res = self.show_repo.get_show(show_id)
-            show = show_res.get("data")
+        # try:
+        #     show_res = self.show_repo.get_show(show_id)
+        #     show = show_res.get("data")
 
-            if not show:
-                return {
-                    "status": "error",
-                    "status_code": 404,
-                    "message": "Show not found"
-                }
+        #     if not show:
+        #         return {
+        #             "status": "error",
+        #             "status_code": 404,
+        #             "message": "Show not found"
+        #         }
 
-            # Check Redis for existing bookings
-            if redis:
-                booked_key = CacheKey.booked_seats(show_id)
-                raw = await redis.get(booked_key)
-                booked = set(json.loads(raw)) if raw else set()
+        #     # Check Redis for existing bookings
+        #     if redis:
+        #         booked_key = CacheKey.booked_seats(show_id)
+        #         raw = await redis.get(booked_key)
+        #         booked = set(json.loads(raw)) if raw else set()
 
-                for seat_id in seat_ids:
-                    if str(seat_id) in booked:
-                        return {
-                            "status": "error", 
-                            "status_code": 409,
-                            "message": f"Seat {seat_id} already booked"
-                        }
+        #         for seat_id in seat_ids:
+        #             if str(seat_id) in booked:
+        #                 return {
+        #                     "status": "error", 
+        #                     "status_code": 409,
+        #                     "message": f"Seat {seat_id} already booked"
+        #                 }
 
-                    if await redis.get(CacheKey.seat_lock(show_id, seat_id)):
-                        return {
-                            "status": "error", 
-                            "status_code": 409,
-                            "message": f"Seat {seat_id} reserved"
-                        }
+        #             if await redis.get(CacheKey.seat_lock(show_id, seat_id)):
+        #                 return {
+        #                     "status": "error", 
+        #                     "status_code": 409,
+        #                     "message": f"Seat {seat_id} reserved"
+        #                 }
 
-            else:
-                unavailable = self.repo.check_seats_taken(show_id, seat_ids)
-                if unavailable.get("data"):
-                    return {
-                        "status": "error",
-                        "status_code": 409,
-                        "message": "Seats already booked"
-                    }
+        #     else:
+        #         unavailable = self.repo.check_seats_taken(show_id, seat_ids)
+        #         if unavailable.get("data"):
+        #             return {
+        #                 "status": "error",
+        #                 "status_code": 409,
+        #                 "message": "Seats already booked"
+        #             }
 
-            total_amount = float(show["price"]) * len(seat_ids)
+        #     total_amount = float(show["price"]) * len(seat_ids)
 
-            # Lock seats in Redis
-            if redis:
-                locked = []
-                try:
-                    for seat_id in seat_ids:
-                        key = CacheKey.seat_lock(show_id, seat_id)
-                        if not await redis.set(key, user_id, nx=True, ex=settings.SEAT_LOCK_TTL):
-                            # Release already acquired locks
-                            for s in locked:
-                                await redis.delete(CacheKey.seat_lock(show_id, s))
-                            return {
-                                "status": "error",
-                                "status_code": 409,
-                                "message": f"Seat {seat_id} just locked"
-                            }
-                        locked.append(seat_id)
-                except Exception as e:
-                    # Release all locks on error
-                    for s in locked:
-                        await redis.delete(CacheKey.seat_lock(show_id, s))
-                    raise
+        #     # Lock seats in Redis
+        #     if redis:
+        #         locked = []
+        #         try:
+        #             for seat_id in seat_ids:
+        #                 key = CacheKey.seat_lock(show_id, seat_id)
+        #                 if not await redis.set(key, user_id, nx=True, ex=settings.SEAT_LOCK_TTL):
+        #                     # Release already acquired locks
+        #                     for s in locked:
+        #                         await redis.delete(CacheKey.seat_lock(show_id, s))
+        #                     return {
+        #                         "status": "error",
+        #                         "status_code": 409,
+        #                         "message": f"Seat {seat_id} just locked"
+        #                     }
+        #                 locked.append(seat_id)
+        #         except Exception as e:
+        #             # Release all locks on error
+        #             for s in locked:
+        #                 await redis.delete(CacheKey.seat_lock(show_id, s))
+        #             raise
 
-            # Create booking in database
-            booking = self.repo.create_booking(
-                user_id=user_id,
-                show_id=show_id,
-                seat_ids=seat_ids,
-                amount=total_amount
-            )
+        #     # Create booking in database
+        #     booking = self.repo.create_booking(
+        #         user_id=user_id,
+        #         show_id=show_id,
+        #         seat_ids=seat_ids,
+        #         amount=total_amount
+        #     )
 
-            # If booking creation failed, release Redis locks
-            if booking.get("status") != "success" and redis:
-                for seat_id in seat_ids:
-                    await redis.delete(CacheKey.seat_lock(show_id, seat_id))
+        #     # If booking creation failed, release Redis locks
+        #     if booking.get("status") != "success" and redis:
+        #         for seat_id in seat_ids:
+        #             await redis.delete(CacheKey.seat_lock(show_id, seat_id))
 
-            return booking
+        #     return booking
 
-        finally:
-            if redis:
-                await redis.delete(booking_lock_key)
+        # finally:
+        #     if redis:
+        #         await redis.delete(booking_lock_key)
 
     # -------------------------
     # ✅ CONFIRM BOOKING + PAYMENT (FIXED)
