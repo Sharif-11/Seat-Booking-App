@@ -125,8 +125,16 @@ class ShowService:
                     "data": cached
                 }
         except Exception:
-            seat_map=self.repo.get_seats_by_show(show_id)
-            seat_booked=self.booking_repo.get_booked_seats_for_show(show_id)
+            try:
+                 seat_map=self.repo.get_seats_by_show(show_id)
+                 seat_booked=self.booking_repo.get_booked_seats_for_show(show_id)
+            except Exception:
+                 return {
+                    "status": "error",
+                    "status_code": 500,
+                    "message": "Failed to fetch seat data",
+                    "data": []
+                }
             seat_reserved=set()
             try:
                  seat_reserved=await BookingGateway().get_reserved_seats(show_id)

@@ -54,6 +54,14 @@ class BookingGateway:
             keys=keys,
             args=[user_id, self._RESERVATION_TTL, show_id]
         )
+    async def release_seat_locks(self, show_id: int, seats: list[int]):
+        pipe = self.repo.pipeline()
+
+        for s in seats:
+            pipe.delete(CacheKey.seat_lock(show_id, s))
+
+        await pipe.execute()
+        
 
     # =====================================================
     # 💳 CONFIRM BOOKING

@@ -32,69 +32,42 @@ class BookingRepository:
     # -------------------------
     # 🧹 Unified Expiry Method - Handles DELETION of expired bookings
     # -------------------------
-    def _expire_old_bookings_for_show(self, conn, cur, show_id=None):
-        """
-        DELETE old PENDING bookings and their associated seats.
-        If show_id is provided, only delete for specific show.
-        If show_id is None, delete for all shows.
-        
-        NOTE: This method DELETES records. Use only when you need to free up seats.
-        """
-        try:
-            # Get current UTC time from database
-            current_utc = self._get_current_utc(cur)
-            
-            # Build the WHERE clause based on whether show_id is provided
-            show_filter = ""
-            params = [current_utc]
-            if show_id:
-                show_filter = " AND show_id = %s"
-                params.append(show_id)
-            
-            print(f"[INFO] Deleting expired bookings at {current_utc.isoformat()} for show_id: {show_id if show_id else 'ALL'}")
-            
-            # Step 1: Delete booking_seats for expired bookings
-            cur.execute(f"""
-                DELETE FROM booking_seats
-                WHERE booking_id IN (
-                    SELECT id 
-                    FROM bookings 
-                    WHERE status = 'PENDING'
-                      AND expires_at < %s
-                      {show_filter}
-                )
-            """, params)
-            
-            deleted_seats_count = cur.rowcount
-            
-            # Step 2: Delete the expired bookings
-            cur.execute(f"""
-                DELETE FROM bookings
-                WHERE status = 'PENDING'
-                  AND expires_at < %s
-                  {show_filter}
-                RETURNING id, show_id
-            """, params)
-            
-            deleted_bookings = cur.fetchall()
-            deleted_bookings_count = len(deleted_bookings)
-            
-            # Commit the changes
-            conn.commit()
-            
-            if deleted_bookings_count > 0 or deleted_seats_count > 0:
-                print(f"[INFO] Deleted {deleted_bookings_count} expired bookings and {deleted_seats_count} seat reservations for show_id: {show_id if show_id else 'ALL'}")
-                
-            return {
-                "deleted_bookings_count": deleted_bookings_count,
-                "deleted_seats_count": deleted_seats_count,
-                "deleted_bookings": deleted_bookings
-            }
-            
-        except Exception as e:
-            conn.rollback()
-            print(f"[ERROR] Failed to delete expired bookings for show_id {show_id if show_id else 'ALL'}: {e}")
-            raise e
+    def _expire_old_bookings_for_show(self):
+     conn = get_connection()
+     cur = conn.cursor()
+ 
+     try:
+         cur.execute("""
+             DELETE FROM bookings
+             WHERE status IN ('PENDING','EXPIRED')
+               AND expires_at < (NOW() AT TIME ZONE 'UTC')
+             RETURNING id, show_id
+         """)
+ 
+         deleted_bookings = cur.fetchall()
+         deleted_bookings_count = len(deleted_bookings)
+ 
+         conn.commit()
+         if deleted_bookings_count ==0:
+              print("[INFO] No expired bookings to delete")
+ 
+         if deleted_bookings_count > 0:
+             print(f"[INFO] Deleted {deleted_bookings_count} expired bookings "
+                   f"(seats removed automatically via CASCADE)")
+ 
+         return {
+             "status": "success",
+             "deleted_bookings_count": deleted_bookings_count,
+             "deleted_bookings": deleted_bookings
+         }
+ 
+     except Exception as e:
+         conn.rollback()
+         pass
+ 
+     finally:
+         cur.close()
+         conn.close()
     async def invalidate_cache_for_booking(self, booking_id,seat_ids):
         for seat_id in seat_ids:
             cache_key = CacheKey.seat_lock(booking_id, seat_id)
@@ -144,71 +117,121 @@ class BookingRepository:
     # 🚀 Create Booking
     # -------------------------
     def create_booking(self, user_id, show_id, seat_ids, amount):
-        conn = get_connection()
-        cur = conn.cursor()
-        
-        try:
-            # Delete expired bookings for this show first to free up seats
-            self._expire_old_bookings_for_show(conn, cur, show_id)
-
-            # Get current UTC time from database
-            current_utc = self._get_current_utc(cur)
-            expires_at = current_utc + timedelta(seconds=settings.SEAT_LOCK_TTL)
-
-            cur.execute("""
-                INSERT INTO bookings (
-                    user_id,
-                    show_id,
-                    status,
-                    total_amount,
-                    expires_at,
-                    created_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """, (
-                user_id,
-                show_id,
-                "PENDING",
-                amount,
-                expires_at,
-                current_utc
-            ))
-
-            booking_id = cur.fetchone()[0]
-
-            cur.executemany("""
-                INSERT INTO booking_seats (booking_id, seat_id)
-                VALUES (%s, %s)
-            """, [(booking_id, s) for s in seat_ids])
-
-            conn.commit()
-
-            expires_at_iso = expires_at.isoformat() if expires_at else None
-
-            return {
-                "status": "success",
-                "status_code": 201,
-                "data": {
-                    "booking_id": booking_id,
-                    "seat_ids": seat_ids,
-                    "show_id": show_id,
-                    "total_amount": float(amount),
-                    "expires_at": expires_at_iso
-                }
-            }
-
-        except Exception as e:
-            conn.rollback()
-            return {
-                "status": "error",
-                "status_code": 500,
-                "message": str(e)
-            }
-
-        finally:
-            cur.close()
-            conn.close()
+     conn = get_connection()
+     cur = conn.cursor()
+ 
+     try:
+         # Step 1: Clean up expired bookings BEFORE acquiring locks
+         # Done outside the lock scope to avoid holding locks during DELETE
+         self._expire_old_bookings_for_show()
+ 
+         # Step 2: Lock the requested seats at the DB level (pessimistic lock).
+         # SELECT FOR UPDATE on the seats table ensures that concurrent transactions
+         # requesting overlapping seats will block here and wait — not race past.
+         # ORDER BY seat_id is critical: always lock in a consistent order to prevent
+         # deadlocks (e.g., Txn A locks seat 1 then 3, Txn B locks seat 3 then 1).
+         cur.execute("""
+             SELECT id FROM seats
+             WHERE id = ANY(%s)
+             ORDER BY id
+             FOR UPDATE
+         """, (seat_ids,))
+ 
+         locked_seats = [row[0] for row in cur.fetchall()]
+ 
+         # Step 3: Verify all requested seats actually exist
+         if len(locked_seats) != len(seat_ids):
+             conn.rollback()
+             return {
+                 "status": "error",
+                 "status_code": 404,
+                 "message": "One or more seats not found"
+             }
+ 
+         # Step 4: Check for conflicts — seats already held by PENDING or CONFIRMED bookings
+         # Now that we hold the row locks, no other transaction can insert/update
+         # these seats concurrently, so this check is race-condition-safe.
+         cur.execute("""
+             SELECT bs.seat_id
+             FROM booking_seats bs
+             JOIN bookings b ON b.id = bs.booking_id
+             WHERE b.show_id = %s
+               AND b.status IN ('PENDING', 'CONFIRMED')
+               AND bs.seat_id = ANY(%s)
+         """, (show_id, seat_ids))
+ 
+         conflicting_seats = [row[0] for row in cur.fetchall()]
+ 
+         if conflicting_seats:
+             conn.rollback()
+             return {
+                 "status": "error",
+                 "status_code": 409,
+                 "message": "One or more seats are already taken",
+                 "data": {"conflicting_seats": conflicting_seats}
+             }
+ 
+         # Step 5: All clear — create the booking
+         current_utc = self._get_current_utc(cur)
+         expires_at = current_utc + timedelta(seconds=settings.SEAT_LOCK_TTL)
+ 
+         cur.execute("""
+             INSERT INTO bookings (
+                 user_id,
+                 show_id,
+                 status,
+                 total_amount,
+                 expires_at,
+                 created_at
+             )
+             VALUES (%s, %s, %s, %s, %s, %s)
+             RETURNING id
+         """, (
+             user_id,
+             show_id,
+             "PENDING",
+             amount,
+             expires_at,
+             current_utc
+         ))
+ 
+         booking_id = cur.fetchone()[0]
+ 
+         # Step 6: Insert seats — all or nothing (no partial booking).
+         # If ANY insertion fails (e.g., the UNIQUE constraint on seat_id fires
+         # for a seat from a different show that slipped through), the entire
+         # transaction rolls back automatically via the except block.
+         cur.executemany("""
+             INSERT INTO booking_seats (booking_id, seat_id)
+             VALUES (%s, %s)
+         """, [(booking_id, s) for s in seat_ids])
+ 
+         # Step 7: Commit releases all FOR UPDATE locks atomically
+         conn.commit()
+ 
+         return {
+             "status": "success",
+             "status_code": 201,
+             "data": {
+                 "booking_id": booking_id,
+                 "seat_ids": seat_ids,
+                 "show_id": show_id,
+                 "total_amount": float(amount),
+                 "expires_at": expires_at.isoformat()
+             }
+         }
+ 
+     except Exception as e:
+         conn.rollback()
+         return {
+             "status": "error",
+             "status_code": 500,
+             "message": str(e)
+         }
+ 
+     finally:
+         cur.close()
+         conn.close()
 
     # -------------------------
     # 📖 Get booking - NO DELETION, just check and return status
@@ -346,45 +369,54 @@ class BookingRepository:
         finally:
             cur.close()
             conn.close()
-    def failed_booking(self, booking_id,user_id):
-        conn=get_connection()
-        cur=conn.cursor()
-        try:
-            # fetch booking info first
-            cur.execute("""
-                SELECT status, show_id, expires_at FROM bookings WHERE id = %s AND user_id = %s
-            """, (booking_id, user_id))
-            row = cur.fetchone()
-            if not row:
-                return {"status": "error", "message": "Booking not found"}
-            booking_status, show_id, expires_at = row
-            if booking_status == 'CONFIRMED':
-                return {"status": "error", "message": "Cannot mark confirmed booking as failed"}
-            # now we need to fetch seats for this booking to invalidate cache
-            cur.execute("""
-                SELECT seat_id FROM booking_seats WHERE booking_id = %s
-            """, (booking_id,))
-            seat_ids = [r[0] for r in cur.fetchall()]
-            # now delete the booking and associated seats
-            cur.execute("""
-                DELETE FROM booking_seats WHERE booking_id = %s
-            """, (booking_id,))
-            cur.execute("""
-                DELETE FROM bookings WHERE id = %s
-            """, (booking_id,))
-            conn.commit()
-            return {
-                "status": "success",
-                "message": "Booking marked as failed and deleted",
-                "data": {
-                    "booking_id": booking_id,
-                    "show_id": show_id,
-                    "seat_ids": seat_ids
-                }
-            }
-        except Exception as e:
-            conn.rollback()
-            return {"status": "error", "message": str(e)}
+    def failed_booking(self, booking_id, user_id):
+       conn = get_connection()
+       cur = conn.cursor()
+       try:
+           # Fetch booking + seats in one query using array_agg
+           cur.execute("""
+               SELECT b.status, b.show_id, ARRAY_AGG(bs.seat_id) AS seat_ids
+               FROM bookings b
+               LEFT JOIN booking_seats bs ON bs.booking_id = b.id
+               WHERE b.id = %s AND b.user_id = %s
+               GROUP BY b.status, b.show_id
+           """, (booking_id, user_id))
+   
+           row = cur.fetchone()
+   
+           if not row:
+               return {"status": "error", "message": "Booking not found"}
+   
+           booking_status, show_id, seat_ids = row
+           seat_ids = [s for s in seat_ids if s is not None]  # guard against no seats
+   
+           if booking_status == 'CONFIRMED':
+               return {"status": "error", "message": "Cannot delete a confirmed booking"}
+   
+           # CASCADE handles booking_seats deletion automatically
+           cur.execute("""
+               DELETE FROM bookings WHERE id = %s
+           """, (booking_id,))
+   
+           conn.commit()
+   
+           return {
+               "status": "success",
+               "message": "Booking deleted successfully",
+               "data": {
+                   "booking_id": booking_id,
+                   "show_id": show_id,
+                   "seat_ids": seat_ids
+               }
+           }
+   
+       except Exception as e:
+           conn.rollback()
+           return {"status": "error", "message": str(e)}
+   
+       finally:
+           cur.close()
+           conn.close()
         
     # -------------------------
     # 💳 CONFIRM BOOKING + PAYMENT
@@ -544,6 +576,7 @@ class BookingRepository:
         cur = conn.cursor()
 
         try:
+            self._expire_old_bookings_for_show()
             query = """
                 SELECT bs.seat_id
                 FROM booking_seats bs
