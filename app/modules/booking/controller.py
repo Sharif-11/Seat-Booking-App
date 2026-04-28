@@ -5,6 +5,13 @@ class BookingController:
 
     def __init__(self):
         self.service = BookingService()
+    
+    # Get My Bookings
+    def get_my_bookings(self, user_id):
+        return  self.service.get_bookings_by_user_id(user_id)
+    # download ticket for a booking
+    def download_ticket(self, booking_id, user_id):
+        return self.service.download_ticket(booking_id, user_id)
 
     # -------------------------
     # 🎟 CREATE BOOKING

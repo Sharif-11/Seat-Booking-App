@@ -5,7 +5,7 @@ const BASE = 'http://localhost:8000'
 
 const api = axios.create({ baseURL: BASE, headers: { 'Content-Type': 'application/json' } })
 
-api.interceptors.request.use((cfg) => {
+api.interceptors.request.use(cfg => {
   const t = localStorage.getItem('token')
   if (t) cfg.headers.Authorization = `Bearer ${t}`
   return cfg
@@ -18,12 +18,13 @@ export const requestOtp = (phone: string) =>
 export const verifyOtp = (phone: string, otp: string) =>
   api.post<OtpRequestResponse>('/auth/verify-otp', { phone, otp })
 
-// ── Shows / Trips ─────────────────────────────────────────────────────────────
+export const getMyBookings = () => api.get('/booking')
+// ── Shows / Trips
+export const downloadTicketSlip = (bookingId: number) => api.get(`/booking/${bookingId}/ticket`)
 export const searchTrips = (from_location: string, to_location: string) =>
   api.get('/shows/list', { params: { from_location, to_location } })
 
-export const getSeats = (showId: number) =>
-  api.get(`/shows/${showId}/seats`)
+export const getSeats = (showId: number) => api.get(`/shows/${showId}/seats`)
 
 export interface CreateTripPayload {
   title: string
@@ -33,8 +34,7 @@ export interface CreateTripPayload {
   price: number
   seat_count: number
 }
-export const createTrip = (data: CreateTripPayload) =>
-  api.post('/shows/create', data)
+export const createTrip = (data: CreateTripPayload) => api.post('/shows/create', data)
 
 export interface UpdateTripPayload {
   title: string

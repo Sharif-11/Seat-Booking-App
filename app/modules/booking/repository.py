@@ -7,8 +7,80 @@ from app.config.redis import get_redis
 
 
 class BookingRepository:
-
-    # -------------------------
+    
+    # List All Bookings for a User along with seat information
+    def get_bookings_by_user_id(self, user_id):
+     conn = get_connection()
+     cur = conn.cursor()
+ 
+     try:
+         cur.execute("""
+             SELECT 
+                 b.id, 
+                 b.show_id, 
+                 b.status, 
+                 b.total_amount, 
+                 b.expires_at,
+                 COALESCE(
+                     JSON_AGG(
+                         JSON_BUILD_OBJECT(
+                             'id', bs.seat_id,
+                             'seat_label', s.seat_label
+                         )
+                     ) FILTER (WHERE bs.seat_id IS NOT NULL),
+                     '[]'
+                 ) AS seats
+             FROM bookings b
+             LEFT JOIN booking_seats bs ON bs.booking_id = b.id
+             LEFT JOIN seats s ON s.id = bs.seat_id
+             WHERE b.user_id = %s
+             GROUP BY b.id
+             ORDER BY b.created_at DESC
+         """, (user_id,))
+ 
+         rows = cur.fetchall()
+ 
+         bookings = []
+         for row in rows:
+             booking_id, show_id, status, total_amount, expires_at, seats = row
+ 
+             # Convert expires_at safely
+             expires_at_iso = None
+             if expires_at:
+                 expires_at_iso = (
+                     expires_at.isoformat()
+                     if hasattr(expires_at, "isoformat")
+                     else str(expires_at)
+                 )
+ 
+             bookings.append({
+                 "booking_id": booking_id,
+                 "show_id": show_id,
+                 "status": status,
+                 "total_amount": float(total_amount),
+                 "expires_at": expires_at_iso,
+                 "seats": seats if seats else []   # already structured JSON
+             })
+ 
+         return {
+             "status": "success",
+             "status_code": 200,
+             "message": f"Found {len(bookings)} bookings for user {user_id}",
+             "data": bookings
+         }
+ 
+     except Exception as e:
+         return {
+             "status": "error",
+             "status_code": 500,
+             "message": f"Failed to fetch bookings: {str(e)}",
+             "data": []
+         }
+ 
+     finally:
+         cur.close()
+         conn.close()
+     # -------------------------
     # Helper to get current UTC time from database
     # -------------------------
     def _get_current_utc(self, cur=None):
@@ -131,13 +203,13 @@ class BookingRepository:
          # ORDER BY seat_id is critical: always lock in a consistent order to prevent
          # deadlocks (e.g., Txn A locks seat 1 then 3, Txn B locks seat 3 then 1).
          cur.execute("""
-             SELECT id FROM seats
+             SELECT id, seat_label FROM seats
              WHERE id = ANY(%s)
              ORDER BY id
              FOR UPDATE
          """, (seat_ids,))
  
-         locked_seats = [row[0] for row in cur.fetchall()]
+         locked_seats = [(row[0], row[1]) for row in cur.fetchall()]
  
          # Step 3: Verify all requested seats actually exist
          if len(locked_seats) != len(seat_ids):
@@ -202,9 +274,9 @@ class BookingRepository:
          # for a seat from a different show that slipped through), the entire
          # transaction rolls back automatically via the except block.
          cur.executemany("""
-             INSERT INTO booking_seats (booking_id, seat_id)
-             VALUES (%s, %s)
-         """, [(booking_id, s) for s in seat_ids])
+             INSERT INTO booking_seats (booking_id, seat_id, seat_label)
+             VALUES (%s, %s, %s)
+         """, [(booking_id, s[0], s[1]) for s in locked_seats])
  
          # Step 7: Commit releases all FOR UPDATE locks atomically
          conn.commit()
@@ -300,6 +372,116 @@ class BookingRepository:
                 }
             }
 
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        finally:
+            cur.close()
+            conn.close()
+    def get_booking_with_payment_and_show(self, user_id, booking_id):
+        conn = get_connection()
+        cur = conn.cursor()
+
+        try:
+            # fetch show info
+            cur.execute("""
+                SELECT s.id, s.title, s.from_location, s.to_location, s.departure_time,s.price
+                FROM shows s
+                JOIN bookings b ON b.show_id = s.id
+                WHERE b.id = %s AND b.user_id = %s
+            """, (booking_id, user_id))
+            show_row = cur.fetchone()
+            if not show_row:
+                return {"status": "error", "message": "Booking or show not found"}
+            show_id, title, from_location, to_location, departure_time, price = show_row
+                         
+
+
+            # Get booking details along with payment info
+            cur.execute("""
+                SELECT 
+                    b.id, 
+                    b.show_id, 
+                    b.status, 
+                    b.total_amount, 
+                    b.expires_at,
+                    p.id AS payment_id,
+                    p.transaction_id,
+                    p.amount AS payment_amount,
+                    p.status AS payment_status
+                FROM bookings b
+                LEFT JOIN payments p ON p.booking_id = b.id
+                WHERE b.id = %s AND b.user_id = %s
+            """, (booking_id, user_id))
+
+            row = cur.fetchone()
+
+            if not row:
+                return {"status": "error", "message": "Booking not found"}
+
+            (booking_id, show_id, status, total_amount, expires_at,
+             payment_id, transaction_id, payment_amount, payment_status) = row
+            
+            # Check if the booking is expired but not yet deleted
+            if status == 'PENDING' and expires_at:
+                current_utc = self._get_current_utc(cur)
+                if expires_at < current_utc:
+                    return {
+                        "status": "success",
+                        "data": {
+                            "booking_id": booking_id,
+                            "user_id": user_id,
+                            "show_id": show_id,
+                            "status": "EXPIRED",
+                            "total_amount": float(total_amount),
+                            "expires_at": expires_at.isoformat() if hasattr(expires_at, 'isoformat') else str(expires_at),
+                            "payment": {
+                                "payment_id": payment_id,
+                                "transaction_id": transaction_id,
+                                "amount": float(payment_amount) if payment_amount else None,
+                                "status": payment_status
+                            },
+                            "seat_ids": [
+                                
+                            ]
+                        }
+                    }
+            
+            seat_ids = []
+            if status != 'EXPIRED':
+                cur.execute("""
+                    SELECT seat_id,seat_label FROM booking_seats WHERE booking_id = %s
+                """, (booking_id,))
+                seat_ids = [(r[0], r[1]) for r in cur.fetchall()]
+
+            expires_at_iso = None
+            if expires_at:
+                expires_at_iso = expires_at.isoformat() if hasattr(expires_at, 'isoformat') else str(expires_at)
+
+            return {
+                "status": "success",
+                "data": {
+                    "booking_id": booking_id,
+                    "user_id": user_id,
+                    "show": {
+                        "id": show_id,
+                        "title": title,
+                        "from_location": from_location,
+                        "to_location": to_location,
+                        "departure_time": departure_time.isoformat() if hasattr(departure_time, 'isoformat') else str(departure_time),
+                        "price": float(price)
+                    },
+                    "status": status,
+                    "total_amount": float(total_amount),
+                    "expires_at": expires_at_iso,
+                    "payment": {
+                        "payment_id": payment_id,
+                        "transaction_id": transaction_id,
+                        "amount": float(payment_amount) if payment_amount else None,
+                        "status": payment_status
+                    },
+                    "seats": [{"seat_id": s[0], "seat_label": s[1]} for s in seat_ids] if seat_ids else []
+                }
+            }
         except Exception as e:
             return {"status": "error", "message": str(e)}
         finally:

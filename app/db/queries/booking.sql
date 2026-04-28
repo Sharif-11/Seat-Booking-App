@@ -19,6 +19,7 @@ CREATE TABLE booking_seats (
     id              BIGSERIAL PRIMARY KEY,
     booking_id      BIGINT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
     seat_id         BIGINT NOT NULL REFERENCES seats(id),
+    seat_label      VARCHAR(10),  -- store seat label for easy access
 
     UNIQUE (seat_id)  -- prevents double booking globally
 );

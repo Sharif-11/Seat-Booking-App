@@ -13,6 +13,17 @@ class BookingService:
     def __init__(self):
         self.repo = BookingRepository()
         self.show_repo = ShowRepository()
+    
+    # Get User Bookings
+    def get_bookings_by_user_id(self, user_id):
+        return self.repo.get_bookings_by_user_id(user_id)
+    def download_ticket(self, booking_id, user_id):
+        booking = self.repo.get_booking_with_payment_and_show(user_id, booking_id)
+
+        if not booking or booking.get("data", {}).get("user_id") != user_id:
+            return {"status": "error", "message": "Booking not found"}
+
+        return booking.get("data", {})
 
     # -------------------------
     # 🚀 CREATE BOOKING
