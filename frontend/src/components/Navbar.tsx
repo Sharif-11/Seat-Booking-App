@@ -45,7 +45,7 @@ export default function Navbar() {
               <div className={styles.userRow}>
                 <div className={styles.userBadge}>
                   <Ticket size={13} />
-                  <span>···{user?.phone.slice(-4)}</span>
+                  <span>···{user?.phone?.slice(-4)}</span>
                 </div>
                 <button className={styles.logoutBtn} onClick={logout} title='Sign out'>
                   <LogOut size={14} />

@@ -5,6 +5,7 @@ from app.modules.shows.repository import ShowRepository
 from app.modules.booking.repository import BookingRepository
 from app.config.redis import get_redis
 from app.config.Cache_key import CacheKey   # ✅ import your reusable class
+from app.modules.socket.gateway import socket_manager  # ✅ import the SocketManager instance
 
 
 CACHE_TTL = 300  # 5 minutes
@@ -48,7 +49,8 @@ class ShowService:
     # ✏️ Update Show
     # -------------------------
     async def update_show(self, show_id, data):
-
+    
+ 
         old = self.repo.get_show(show_id)
         old_data = old if old else None
 
@@ -117,7 +119,7 @@ class ShowService:
         try:
             cached = await BookingGateway().get_seat_state(show_id)
            
-            print("Cached seat map:", cached)  # Debug log
+          
             if cached is not None:
                 return {
                     "status": "success",
