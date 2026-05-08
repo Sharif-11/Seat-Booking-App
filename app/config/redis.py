@@ -16,12 +16,6 @@ async def init_redis():
 
     )
     check = await redis_client.ping()
-    # log all key and values in redis
-    keys = await redis_client.keys("*")
-    print(f"Redis keys: {keys}")
-    for key in keys:
-        value = await redis_client.get(key)
-        print(f"Redis key: {key}, value: {value}")
     await redis_client.ping()
     print("Redis connected")
 

@@ -1,5 +1,7 @@
 import asyncpg
 
+from app.config.settings import settings
+
 DB_POOL = None
 
 
@@ -7,11 +9,11 @@ async def init_db():
     global DB_POOL
 
     DB_POOL = await asyncpg.create_pool(
-        user="postgres",
-        password="123456",
-        database="seat_booking",
-        host="localhost",
-        port=5432,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+        host=settings.DB_HOST,
+        port=settings.DB_PORT,
         min_size=1,
         max_size=10,
     )
