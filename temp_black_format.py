@@ -1,33 +1,35 @@
-import asyncpg
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 
-from app.config.settings import settings
+from app.bootstrap import lifespan
+from app.core.exceptions import validation_exception_handler
+from app.modules.socket.gateway import socket_manager
 
-DB_POOL = None
+from app.modules.auth.routes import router as auth_router
+from app.modules.booking.routes import router as booking_router
+from app.modules.shows.routes import router as shows_router
 
+fastapi_app = FastAPI(title="Seat Booking API", version="1.0.0", lifespan=lifespan)
 
-async def init_db():
-    global DB_POOL
+fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,   # Must be False when using wildcard origins
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
-    DB_POOL = await asyncpg.create_pool(
-        user=settings.DB_USER,
-        password=settings.DB_PASSWORD,
-        database=settings.DB_NAME,
-        host=settings.DB_HOST,
-        port=settings.DB_PORT,
-        min_size=1,
-        max_size=10,
-    )
+fastapi_app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
-    print("Postgres connected")
+fastapi_app.include_router(auth_router, prefix="/auth", tags=["Auth"])
+fastapi_app.include_router(shows_router, prefix="/shows", tags=["Shows"])
+fastapi_app.include_router(booking_router, prefix="/booking", tags=["Booking"])
 
+@fastapi_app.get("/")
+async def root():
+    return {"status": "success", "message": "Welcome to the Movie Booking API!"}
 
-async def close_db():
-    global DB_POOL
-
-    if DB_POOL:
-        await DB_POOL.close()
-        print("Postgres closed")
-
-
-def get_db():
-    return DB_POOL
+# ✅ Wrap FastAPI with Socket.IO — this becomes the actual ASGI app
+app = socket_manager.build_app(fastapi_app)

@@ -22,12 +22,6 @@ import { generateTicketPDF } from './TicketTemplate'
 const fmtTime = (s: string) =>
   new Date(s).toLocaleTimeString('en-BD', { hour: '2-digit', minute: '2-digit', hour12: true })
 
-const fmtDate = (s: string) =>
-  new Date(s).toLocaleDateString('en-BD', { day: 'numeric', month: 'short', year: 'numeric' })
-
-const fmtDateShort = (s: string) =>
-  new Date(s).toLocaleDateString('en-BD', { day: 'numeric', month: 'short' })
-
 const STATUS_META: Record<BookingStatus, { label: string; cls: string }> = {
   PENDING: { label: 'Pending Payment', cls: 'pending' },
   CONFIRMED: { label: 'Confirmed', cls: 'confirmed' },
@@ -108,9 +102,6 @@ export default function MyBookings() {
     { ALL: 0 }
   )
 
-  const canPay = (b: MyBooking) =>
-    b.status === 'PENDING' && b.expires_at && new Date(b.expires_at) > new Date()
-
   /* ── render ── */
   if (!isAuthenticated) return null
 
@@ -190,7 +181,7 @@ export default function MyBookings() {
           <div className={styles.list}>
             {filtered.map((b, idx) => {
               const meta = STATUS_META[b.status] ?? { label: b.status, cls: 'pending' }
-              const payable = canPay(b)
+
               const expired = b.expires_at ? new Date(b.expires_at) < new Date() : false
               const isDownloading = downloadingId === b.booking_id
 

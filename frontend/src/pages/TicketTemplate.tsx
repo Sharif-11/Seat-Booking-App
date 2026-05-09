@@ -143,7 +143,7 @@ export const generateTicketPDF = async (bookingData: any) => {
       useCORS: true,
       windowWidth: ticketElement.scrollWidth,
       windowHeight: ticketElement.scrollHeight,
-      onclone: (clonedDoc, element) => {
+      onclone: (_clonedDoc, element) => {
         // Ensure any dynamic styles are applied
         if (element) {
           element.style.background = '#f5f7fa'

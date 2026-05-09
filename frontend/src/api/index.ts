@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type { OtpRequestResponse } from '../types'
 
-const BASE = 'http://localhost:8000'
+const BASE = 'http://138.252.124.38:8000'
 
 const api = axios.create({ baseURL: BASE, headers: { 'Content-Type': 'application/json' } })
 
